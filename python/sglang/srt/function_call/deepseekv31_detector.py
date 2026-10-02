@@ -113,23 +113,23 @@ class DeepSeekV31Detector(BaseFormatDetector):
 
         calls: list[ToolCallItem] = []
         try:
-            partial_match = re.search(
-                pattern=r"<｜tool▁call▁begin｜>(.*)<｜tool▁sep｜>(.*?)(<｜tool▁call▁end｜>|$)",
-                string=current_text,
-                flags=re.DOTALL,
-            )
-            if partial_match:
+            while True:
+                partial_match = re.search(
+                    pattern=r"<｜tool▁call▁begin｜>(.*?)<｜tool▁sep｜>(.*?)(<｜tool▁call▁end｜>|$)",
+                    string=current_text,
+                    flags=re.DOTALL,
+                )
+                if not partial_match:
+                    break
                 func_name = partial_match.group(1).strip()
                 func_args_raw = partial_match.group(2).strip()
                 is_tool_end = partial_match.group(3)
 
-                # Initialize state if this is the first tool call
                 if self.current_tool_id == -1:
                     self.current_tool_id = 0
                     self.prev_tool_call_arr = []
                     self.streamed_args_for_tool = [""]
 
-                # Ensure we have enough entries in our tracking arrays
                 while len(self.prev_tool_call_arr) <= self.current_tool_id:
                     self.prev_tool_call_arr.append({})
                 while len(self.streamed_args_for_tool) <= self.current_tool_id:
@@ -144,53 +144,44 @@ class DeepSeekV31Detector(BaseFormatDetector):
                         )
                     )
                     self.current_tool_name_sent = True
-                    # Store the tool call info for serving layer completions endpoint
                     self.prev_tool_call_arr[self.current_tool_id] = {
                         "name": func_name,
                         "arguments": {},
                     }
-                else:
-                    argument_diff = (
-                        func_args_raw[len(self._last_arguments) :]
-                        if func_args_raw.startswith(self._last_arguments)
-                        else func_args_raw
+
+                # A single increment can contain both the name and arguments.
+                argument_diff = (
+                    func_args_raw[len(self._last_arguments) :]
+                    if func_args_raw.startswith(self._last_arguments)
+                    else func_args_raw
+                )
+                if argument_diff:
+                    calls.append(
+                        ToolCallItem(
+                            tool_index=self.current_tool_id,
+                            name=None,
+                            parameters=argument_diff,
+                        )
+                    )
+                    self._last_arguments += argument_diff
+                    self.streamed_args_for_tool[self.current_tool_id] += argument_diff
+
+                if _is_complete_json(func_args_raw):
+                    self.prev_tool_call_arr[self.current_tool_id]["arguments"] = (
+                        json.loads(func_args_raw)
                     )
 
-                    if argument_diff:
-                        calls.append(
-                            ToolCallItem(
-                                tool_index=self.current_tool_id,
-                                name=None,
-                                parameters=argument_diff,
-                            )
-                        )
-                        self._last_arguments += argument_diff
-                        self.streamed_args_for_tool[self.current_tool_id] += (
-                            argument_diff
-                        )
+                # Keep this call's state until its closing marker arrives;
+                # complete JSON alone must not advance the tool index.
+                if not is_tool_end:
+                    break
 
-                    if _is_complete_json(func_args_raw):
-                        # Update the stored arguments
-                        try:
-                            parsed_args = json.loads(func_args_raw)
-                            self.prev_tool_call_arr[self.current_tool_id][
-                                "arguments"
-                            ] = parsed_args
-                        except json.JSONDecodeError:
-                            pass
-
-                        # Find the end of the current tool call and remove only that part from buffer
-                        if is_tool_end:
-                            # Remove the completed tool call from buffer, keep any remaining content
-                            self._buffer = current_text[partial_match.end(3) :]
-                        else:
-                            self._buffer = ""
-
-                        result = StreamingParseResult(normal_text="", calls=calls)
-                        self.current_tool_id += 1
-                        self._last_arguments = ""
-                        self.current_tool_name_sent = False
-                        return result
+                current_text = current_text[partial_match.end(3) :]
+                self._buffer = current_text
+                self.current_tool_id += 1
+                self._last_arguments = ""
+                self.current_tool_name_sent = False
+                # Continue so another call in the same increment is not stranded.
 
             return StreamingParseResult(normal_text="", calls=calls)
 
