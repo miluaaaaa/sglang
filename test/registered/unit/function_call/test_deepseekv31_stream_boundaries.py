@@ -28,13 +28,17 @@ class TestDeepSeekV31StreamBoundaries(unittest.TestCase):
         expected = DeepSeekV31Detector().detect_and_parse("".join(chunks), self.tools)
         detector = DeepSeekV31Detector()
         accumulated = {}
+        normal_text = ""
         for chunk in chunks:
-            for call in detector.parse_streaming_increment(chunk, self.tools).calls:
+            result = detector.parse_streaming_increment(chunk, self.tools)
+            normal_text += result.normal_text
+            for call in result.calls:
                 entry = accumulated.setdefault(call.tool_index, [None, ""])
                 if call.name:
                     self.assertIsNone(entry[0], "tool name emitted more than once")
                     entry[0] = call.name
                 entry[1] += call.parameters
+        self.assertEqual(normal_text, expected.normal_text)
         self.assertEqual(list(accumulated), list(range(len(expected.calls))))
         self.assertEqual(
             [(name, json.loads(arguments)) for name, arguments in accumulated.values()],
@@ -61,6 +65,21 @@ class TestDeepSeekV31StreamBoundaries(unittest.TestCase):
         self.assert_calls_match(
             [
                 self.begin
+                + self.opener("get_weather")
+                + '{"city": "Tokyo"}'
+                + self.close
+                + self.opener("get_time")
+                + '{"zone": "UTC"}'
+                + self.close
+                + self.end
+            ]
+        )
+
+    def test_preamble_and_multiple_complete_calls_in_one_delta(self):
+        self.assert_calls_match(
+            [
+                "Checking."
+                + self.begin
                 + self.opener("get_weather")
                 + '{"city": "Tokyo"}'
                 + self.close
