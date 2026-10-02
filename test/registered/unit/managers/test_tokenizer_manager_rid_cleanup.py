@@ -393,11 +393,11 @@ class TestAbortOutputPayload(CustomTestCase):
         self.assertNotIn("prompt_token_ids", without_ids.out_list[0])
 
     def test_abort_output_ids_match_the_streaming_mode(self):
-        """Only incremental streaming collapses the abort chunk to the last
-        token; cumulative chunks supersede, so they carry the whole generation.
+        """An abort before the first streamed chunk carries all generated IDs;
+        cumulative chunks also carry the whole generation.
         """
         cases = [
-            ("incremental stream", True, True, [7]),
+            ("incremental stream", True, True, [5, 6, 7]),
             ("cumulative stream", True, False, [5, 6, 7]),
             ("non-stream", False, False, [5, 6, 7]),
         ]
@@ -416,6 +416,60 @@ class TestAbortOutputPayload(CustomTestCase):
                 out = state.out_list[0]
                 self.assertEqual(out["output_ids"], expected)
                 self.assertEqual(out["meta_info"]["completion_tokens"], 3)
+
+    def test_incremental_abort_emits_only_pending_text_and_ids(self):
+        for text_offset, token_offset in ((0, 0), (10, 5), (11, 7)):
+            with self.subTest(text_offset=text_offset, token_offset=token_offset):
+                tm = _make_tokenizer_manager(self)
+                tm.incremental_streaming_output = True
+                state = _make_req_state("incremental_abort")
+                state.obj.stream = True
+                state.append_text("hello ")
+                state.get_text()  # Exercise both flattened and lazy text storage.
+                state.append_text("world")
+                state.output_ids = [1, 2, 3, 4, 5, 6, 7]
+                state.last_output_offset = token_offset
+                state.last_streamed_text_len = text_offset
+                tm.rid_to_state[state.obj.rid] = state
+
+                tm._handle_abort_req(_make_abort_req(state.obj.rid))
+
+                out = state.out_list[-1]
+                self.assertEqual(out["text"], "hello world"[text_offset:])
+                self.assertEqual(
+                    out["output_ids"], [1, 2, 3, 4, 5, 6, 7][token_offset:]
+                )
+                self.assertEqual(out["meta_info"]["completion_tokens"], 7)
+                self.assertTrue(state.finished)
+                self.assertTrue(state.event.is_set())
+                self.assertNotIn(state.obj.rid, tm.rid_to_state)
+
+    def test_incremental_batch_then_abort_preserves_disjoint_output(self):
+        async def drive():
+            tm = _make_tokenizer_manager(self)
+            tm.incremental_streaming_output = True
+            state = _make_req_state("batch_then_abort")
+            state.obj.stream = True
+            tm.rid_to_state[state.obj.rid] = state
+            for text, ids in (("hello ", [1, 2]), ("world", [3, 4])):
+                batch = _make_batch_str_output(state.obj.rid, _NOT_FINISHED)
+                batch.output_strs = [text]
+                batch.output_ids = [ids]
+                await tm._handle_batch_output(batch)
+
+            # Simulate generated output not yet sent to the response waiter.
+            state.append_text("!")
+            state.output_ids.extend([5, 6])
+            tm._handle_abort_req(_make_abort_req(state.obj.rid))
+            self.assertEqual(
+                [out["text"] for out in state.out_list], ["hello ", "world", "!"]
+            )
+            self.assertEqual(
+                [out["output_ids"] for out in state.out_list], [[1, 2], [3, 4], [5, 6]]
+            )
+            self.assertEqual(state.out_list[-1]["meta_info"]["completion_tokens"], 6)
+
+        asyncio.run(drive())
 
 
 class TestRidToStateCleanupOnBatchOutput(CustomTestCase):
