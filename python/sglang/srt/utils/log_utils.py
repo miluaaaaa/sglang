@@ -5,25 +5,43 @@ import logging
 import os
 import socket
 import sys
+import uuid
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from typing import List, Optional, Union
 
 import torch.distributed as dist
 
+from sglang.srt.utils.request_log_retention import RequestLogRetentionHandler
+
 
 def create_log_targets(
-    *, targets: Optional[List[str]], name_prefix: str
+    *,
+    targets: Optional[List[str]],
+    name_prefix: str,
+    retention_days: Optional[int] = None,
+    instance_id: Optional[str] = None,
 ) -> List[logging.Logger]:
+    if retention_days is not None and retention_days <= 0:
+        raise ValueError("--log-requests-retention-days must be positive")
     if not targets:
         return [_create_log_target_stdout(name_prefix)]
-    return [_create_log_target(t, name_prefix) for t in targets]
+    if retention_days is not None and instance_id is None:
+        instance_id = uuid.uuid4().hex
+    return [
+        _create_log_target(t, name_prefix, retention_days, instance_id) for t in targets
+    ]
 
 
-def _create_log_target(target: str, name_prefix: str) -> logging.Logger:
+def _create_log_target(
+    target: str,
+    name_prefix: str,
+    retention_days: Optional[int] = None,
+    instance_id: Optional[str] = None,
+) -> logging.Logger:
     if target.lower() == "stdout":
         return _create_log_target_stdout(name_prefix)
-    return _create_log_target_file(target, name_prefix)
+    return _create_log_target_file(target, name_prefix, retention_days, instance_id)
 
 
 def _create_log_target_stdout(name_prefix: str) -> logging.Logger:
@@ -32,16 +50,27 @@ def _create_log_target_stdout(name_prefix: str) -> logging.Logger:
     )
 
 
-def _create_log_target_file(directory: str, name_prefix: str) -> logging.Logger:
+def _create_log_target_file(
+    directory: str,
+    name_prefix: str,
+    retention_days: Optional[int] = None,
+    instance_id: Optional[str] = None,
+) -> logging.Logger:
     os.makedirs(directory, exist_ok=True)
     hostname = socket.gethostname()
     rank = dist.get_rank() if dist.is_initialized() else 0
-    filename = os.path.join(directory, f"{hostname}_{rank}.log")
-    handler = TimedRotatingFileHandler(
-        filename, when="H", backupCount=0, encoding="utf-8"
-    )
+    stem = f"{hostname}_{rank}"
+    if retention_days is not None:
+        stem += f"_{instance_id}"
+    filename = os.path.join(directory, stem + ".log")
+    if retention_days is None:
+        handler = TimedRotatingFileHandler(
+            filename, when="H", backupCount=0, encoding="utf-8"
+        )
+    else:
+        handler = RequestLogRetentionHandler(filename, retention_days)
     return _create_logger_with_handler(
-        f"{name_prefix}.file.{directory}.{hostname}_{rank}", handler
+        f"{name_prefix}.file.{directory}.{stem}", handler
     )
 
 
@@ -54,6 +83,8 @@ def _create_logger_with_handler(name: str, handler: logging.Handler) -> logging.
             logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
         )
         logger.addHandler(handler)
+    else:
+        handler.close()
     return logger
 
 

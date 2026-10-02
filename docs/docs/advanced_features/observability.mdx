@@ -15,8 +15,12 @@ See [Production Metrics](../references/production_metrics) and [Production Reque
 ## Logging
 
 By default, SGLang does not log any request contents. You can log them by using `--log-requests`.
-You can control the verbosity by using `--log-request-level`.
+You can control the verbosity by using `--log-requests-level`.
 See [Logging](./server_arguments#logging) for more details.
+
+For file targets, set `--log-requests-retention-days` to a positive integer to expire rotated request log archives. For example, add `--log-requests-target /var/log/sglang/requests --log-requests-retention-days 7` to your server launch command to retain archives for seven days. Omit the retention option to keep the existing unlimited retention.
+
+Expiration uses each archive's last modification time and runs when the file handler starts and every 60 seconds, including while the server is idle. With retention enabled, each request logger uses an instance-specific filename. Cleanup leaves active logs, unrelated files, symlinks, and archives from previous instances or other Pods untouched. Manage those previous instances' logs separately. The retention option does not affect `stdout` or the hourly rotation interval.
 
 You can change verbosity at runtime:
 

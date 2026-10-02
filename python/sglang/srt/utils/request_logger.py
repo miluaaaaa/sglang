@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import uuid
+import weakref
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
 
 from sglang.srt.environ import envs
 from sglang.srt.utils.log_utils import create_log_targets, log_json
+from sglang.srt.utils.request_log_retention import RequestLogRetentionHandler
 
 if TYPE_CHECKING:
     import fastapi
@@ -48,22 +51,42 @@ class RequestLogger:
         log_requests_level: int,
         log_requests_format: str,
         log_requests_target: Optional[List[str]],
+        log_requests_retention_days: Optional[int] = None,
     ):
         self.log_requests = log_requests
         self.log_requests_level = log_requests_level
         self.log_requests_format = log_requests_format
         self.log_requests_target = log_requests_target
+        self.log_requests_retention_days = log_requests_retention_days
+        self._log_instance_id = uuid.uuid4().hex
 
         self.metadata: Tuple[Optional[int], Optional[Set[str]], Optional[Set[str]]] = (
             self._compute_metadata()
         )
         self.targets = self._setup_targets()
+        self._targets_finalizer = weakref.finalize(
+            self, self._close_targets, self.targets
+        )
 
         self.log_exceeded_ms = envs.SGLANG_LOG_REQUEST_EXCEEDED_MS.get()
 
+    @staticmethod
+    def _close_targets(targets: List[logging.Logger]) -> None:
+        for target in targets:
+            for handler in list(target.handlers):
+                if isinstance(handler, RequestLogRetentionHandler):
+                    target.removeHandler(handler)
+                    handler.close()
+
+    def close(self) -> None:
+        self._targets_finalizer()
+
     def _setup_targets(self) -> List[logging.Logger]:
         return create_log_targets(
-            targets=self.log_requests_target, name_prefix=__name__
+            targets=self.log_requests_target,
+            name_prefix=__name__,
+            retention_days=self.log_requests_retention_days,
+            instance_id=self._log_instance_id,
         )
 
     def configure(
@@ -83,7 +106,15 @@ class RequestLogger:
             self.log_requests_target = log_requests_target
 
         self.metadata = self._compute_metadata()
+        previous_targets = self.targets
         self.targets = self._setup_targets()
+        self._close_targets(
+            [target for target in previous_targets if target not in self.targets]
+        )
+        self._targets_finalizer.detach()
+        self._targets_finalizer = weakref.finalize(
+            self, self._close_targets, self.targets
+        )
 
     def log_received_request(
         self,

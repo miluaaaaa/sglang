@@ -20,6 +20,13 @@ from sglang.srt.arg_groups.arg_utils import (
 from sglang.srt.utils.common import json_list_type
 
 
+def _positive_retention_days(value: str) -> int:
+    days = int(value)
+    if days <= 0:
+        raise argparse.ArgumentTypeError("request log retention days must be positive")
+    return days
+
+
 class Observability(msgspec.Struct):
     """Namespace ``observability``."""
 
@@ -54,6 +61,13 @@ class Observability(msgspec.Struct):
     log_requests_target: A[
         Optional[List[str]],
         "Target(s) for request logging: 'stdout' and/or directory path(s) for file output. Can specify multiple targets, e.g., '--log-requests-target stdout /my/path'. ",
+    ] = None
+    log_requests_retention_days: A[
+        Optional[int],
+        Arg(
+            help="Expire this request logging instance's rotated file archives after this many days (positive integer), based on their modification time. Cleanup runs at startup and every 60 seconds, including while idle. Omit for unlimited retention; active logs and other instances' archives are preserved.",
+            type_parser=_positive_retention_days,
+        ),
     ] = None
     uvicorn_access_log_exclude_prefixes: A[
         List[str],
