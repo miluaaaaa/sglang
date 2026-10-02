@@ -1,10 +1,12 @@
 """Compile nested structural formats with missing schemas using real XGrammar."""
 
 import copy
+import json
 import unittest
 
 import xgrammar as xgr
 
+from sglang.srt.constrained.base_grammar_backend import InvalidGrammarObject
 from sglang.srt.constrained.xgrammar_backend import XGrammarGrammarBackend
 from sglang.test.ci.ci_register import register_cpu_ci
 
@@ -15,9 +17,19 @@ class TestStructuralSchemaSanitization(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         vocabulary = ["<eos>"] + [chr(c) for c in range(32, 127)]
-        cls.compiler = xgr.GrammarCompiler(
-            xgr.TokenizerInfo(vocabulary, stop_token_ids=[0])
-        )
+        cls.tokenizer_info = xgr.TokenizerInfo(vocabulary, stop_token_ids=[0])
+        cls.compiler = xgr.GrammarCompiler(cls.tokenizer_info)
+
+    def _backend(self):
+        tokenizer_info = self.tokenizer_info
+
+        class Tokenizer:
+            def init_xgrammar(self):
+                return tokenizer_info, None
+
+        backend = XGrammarGrammarBackend(Tokenizer(), vocab_size=96)
+        self.addCleanup(backend.executor.shutdown)
+        return backend
 
     def _compile(self, fmt):
         XGrammarGrammarBackend._sanitize_structural_format(fmt)
@@ -147,6 +159,50 @@ class TestStructuralSchemaSanitization(unittest.TestCase):
                         self.compiler.compile_structural_tag(
                             {"type": "structural_tag", "format": fmt}
                         )
+
+    def test_backend_dispatch_accepts_all_nested_containers(self):
+        backend = self._backend()
+        leaf = {"type": "json_schema", "json_schema": None}
+        formats = [
+            {"type": kind, "content": leaf} for kind in ("optional", "star", "plus")
+        ] + [
+            {"type": "repeat", "min": 1, "max": 2, "content": leaf},
+            {"type": "dispatch", "rules": [["<f>", leaf]]},
+            {"type": "token_dispatch", "rules": [[1, leaf]]},
+            {
+                "type": "token_triggered_tags",
+                "trigger_tokens": [1],
+                "tags": [
+                    {
+                        "type": "tag",
+                        "begin": {"type": "token", "token": 1},
+                        "content": leaf,
+                        "end": "!",
+                    }
+                ],
+            },
+        ]
+        for fmt in formats:
+            with self.subTest(kind=fmt["type"]):
+                result = backend.dispatch_structural_tag(
+                    json.dumps({"type": "structural_tag", "format": fmt})
+                )
+                self.assertNotIsInstance(result, InvalidGrammarObject)
+
+    def test_backend_dispatch_returns_invalid_object_for_malformed_rules(self):
+        backend = self._backend()
+        for kind in ("dispatch", "token_dispatch"):
+            for rules in (None, [["x"]], [["x", {}, {}]]):
+                with self.subTest(kind=kind, rules=rules):
+                    result = backend.dispatch_structural_tag(
+                        json.dumps(
+                            {
+                                "type": "structural_tag",
+                                "format": {"type": kind, "rules": rules},
+                            }
+                        )
+                    )
+                    self.assertIsInstance(result, InvalidGrammarObject)
 
 
 if __name__ == "__main__":
