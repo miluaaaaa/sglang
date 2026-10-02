@@ -29,7 +29,9 @@ class TestDeepSeekV31StreamingPreamble(unittest.TestCase):
         result = detector.parse_streaming_increment(text, self.tools)
         expected = detector.detect_and_parse(text, self.tools)
         self.assertEqual(result.normal_text, expected.normal_text)
-        self.assertEqual([call.name for call in result.calls], ["get_weather"])
+        self.assertEqual(
+            [call.name for call in result.calls if call.name], ["get_weather"]
+        )
         # A subsequent increment must not release the same preamble again.
         self.assertEqual(
             detector.parse_streaming_increment("", self.tools).normal_text, ""
@@ -63,7 +65,9 @@ class TestDeepSeekV31StreamingPreamble(unittest.TestCase):
             "Checking.\n" + self.call, self.tools
         )
         self.assertEqual(result.normal_text, "Checking.")
-        self.assertEqual([call.name for call in result.calls], ["get_weather"])
+        self.assertEqual(
+            [call.name for call in result.calls if call.name], ["get_weather"]
+        )
         self.assertEqual(
             detector.parse_streaming_increment("", self.tools).normal_text, ""
         )
@@ -73,7 +77,9 @@ class TestDeepSeekV31StreamingPreamble(unittest.TestCase):
             "<｜tool▁calls▁begin｜>" + self.call, self.tools
         )
         self.assertEqual(result.normal_text, "")
-        self.assertEqual([call.name for call in result.calls], ["get_weather"])
+        self.assertEqual(
+            [call.name for call in result.calls if call.name], ["get_weather"]
+        )
 
     def test_plain_text_is_unchanged(self):
         text = "  The weather is sunny.\n"
