@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from sglang.srt.arg_groups.arg_utils import add_cli_args_from_dataclass
 from sglang.srt.arg_groups.fields.observability import Observability
+from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils.request_log_retention import RequestLogRetentionHandler
 from sglang.srt.utils.request_logger import RequestLogger
 from sglang.test.ci.ci_register import register_cpu_ci
@@ -176,6 +177,39 @@ class TestRequestLogRetention(unittest.TestCase):
         for days in ("0", "-1"):
             with self.subTest(days=days), self.assertRaises(SystemExit):
                 parser.parse_args(["--log-requests-retention-days", days])
+
+    def test_server_args_cli_passes_retention_to_request_logger(self):
+        parser = argparse.ArgumentParser()
+        ServerArgs.add_cli_args(parser)
+        default_args = ServerArgs.from_cli_args(
+            parser.parse_args(["--model-path", "unused-model"])
+        )
+        self.assertIsNone(default_args.log_requests_retention_days)
+        configured = ServerArgs.from_cli_args(
+            parser.parse_args(
+                [
+                    "--model-path",
+                    "unused-model",
+                    "--log-requests",
+                    "--log-requests-target",
+                    self.directory.name,
+                    "--log-requests-retention-days",
+                    "7",
+                ]
+            )
+        )
+        request_logger = RequestLogger(
+            configured.log_requests,
+            configured.log_requests_level,
+            configured.log_requests_format,
+            configured.log_requests_target,
+            configured.log_requests_retention_days,
+        )
+        self.addCleanup(request_logger.close)
+        self.assertTrue(request_logger.log_requests)
+        handler = request_logger.targets[0].handlers[0]
+        self.assertIsInstance(handler, RequestLogRetentionHandler)
+        self.assertEqual(handler.retention_seconds, 7 * 86400)
 
 
 if __name__ == "__main__":
