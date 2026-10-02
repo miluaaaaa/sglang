@@ -309,16 +309,28 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
             if structural_format.get("json_schema") is None:
                 structural_format["json_schema"] = {}
 
-        if fmt_type == "tag":
+        if fmt_type in {"tag", "optional", "star", "plus", "repeat"}:
             XGrammarGrammarBackend._sanitize_structural_format(
                 structural_format.get("content")
             )
         elif fmt_type in {"sequence", "or"}:
             for element in structural_format.get("elements", []):
                 XGrammarGrammarBackend._sanitize_structural_format(element)
-        elif fmt_type in {"triggered_tags", "tags_with_separator"}:
+        elif fmt_type in {
+            "triggered_tags",
+            "token_triggered_tags",
+            "tags_with_separator",
+        }:
             for tag in structural_format.get("tags", []):
                 XGrammarGrammarBackend._sanitize_structural_format(tag)
+        elif fmt_type in {"dispatch", "token_dispatch"}:
+            rules = structural_format.get("rules", [])
+            if not isinstance(rules, (list, tuple)):
+                return
+            for rule in rules:
+                # Leave malformed rules to XGrammar's structural-tag validation.
+                if isinstance(rule, (list, tuple)) and len(rule) == 2:
+                    XGrammarGrammarBackend._sanitize_structural_format(rule[1])
 
     @staticmethod
     def _sanitize_structural_tag_structures(structural_tag: Dict) -> None:
